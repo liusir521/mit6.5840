@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/rpc"
 	"os"
@@ -28,8 +28,7 @@ func ihash(key string) int {
 
 // main/mrworker.go calls this function.
 // 请求任务并执行
-func Worker(mapf func(string, string) []KeyValue,
-	reducef func(string, []string) string) {
+func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 
 	// Your worker implementation here.
 	for {
@@ -91,7 +90,7 @@ func startReduceTask(workerid int, reply GetTaskReply, reducef func(string, []st
 	// 对结果进行排序
 	sort.Sort(ByKey(kva))
 
-	tempfile, err := os.CreateTemp("", "mr-out-tmpfile-*")
+	tempfile, err := os.CreateTemp("", "mr-out-tmp-*")
 	if err != nil {
 		log.Fatal("create tempfile err", err)
 	}
@@ -117,7 +116,11 @@ func startReduceTask(workerid int, reply GetTaskReply, reducef func(string, []st
 
 	tempfile.Close()
 
-	os.Rename(tempfile.Name(), fmt.Sprintf("mr-out-%d", reply.ReduceID))
+	err = os.Rename(tempfile.Name(), fmt.Sprintf("mr-out-%d", reply.ReduceID))
+
+	if err != nil {
+		log.Fatal("rename err", err)
+	}
 
 	completeTask(reply.TaskID, reply.TaskType)
 }
@@ -129,11 +132,12 @@ func startMapTask(workerid int, reply GetTaskReply, mapf func(string, string) []
 
 	// 读取文件内容参考示例文件
 	filename := reply.FileName
+
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatalf("map cannot open %v %v", filename, err)
 	}
-	content, err := ioutil.ReadAll(file)
+	content, err := io.ReadAll(file)
 	if err != nil {
 		log.Fatalf("cannot read %v", filename)
 	}
@@ -152,7 +156,7 @@ func startMapTask(workerid int, reply GetTaskReply, mapf func(string, string) []
 
 	// 临时文件方式存储
 	for i := 0; i < reply.NReduce; i++ {
-		tempfile, err := os.CreateTemp("", "mr-tmpfile")
+		tempfile, err := os.CreateTemp("", "mr-tmp-*")
 		if err != nil {
 			log.Fatal("create tempfile err", err)
 		}
@@ -160,7 +164,7 @@ func startMapTask(workerid int, reply GetTaskReply, mapf func(string, string) []
 		// 使用推荐的json包处理kv
 		encoder := json.NewEncoder(tempfile)
 		for _, kv := range intermediate[i] {
-			err := encoder.Encode(kv)
+			err := encoder.Encode(&kv)
 			if err != nil {
 				log.Fatal("json write tempfile err", err)
 			}

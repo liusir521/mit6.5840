@@ -20,7 +20,7 @@ import (
 const (
 	MapTask = iota
 	ReduceTask
-	WaitingTask // 所有map任务正在执行，此时需要task等待
+	WaitingTask // 任务正在执行，此时需要task等待
 	ExitTask    // map、reduce任务已经执行完毕，退出信号
 )
 

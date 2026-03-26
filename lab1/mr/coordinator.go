@@ -44,6 +44,7 @@ func (c *Coordinator) GetTask(args *GetTaskReq, reply *GetTaskReply) error {
 
 	// 判断是否所有任务均完成
 	if c.isMapFinished && c.isReduceFinished {
+		reply.TaskType = ExitTask
 		return nil
 	}
 
@@ -55,38 +56,37 @@ func (c *Coordinator) GetTask(args *GetTaskReq, reply *GetTaskReply) error {
 		for i, task := range c.mapTasks {
 			// 如果存在map waiting任务，则将其改为running，并返回给worker执行
 			if c.mapTasks[i].TaskStatus == Waiting {
-				c.mapTasks[i].TaskStatus = Running
-				c.mapTasks[i].StartTime = time.Now()
 				reply.TaskID = task.TaskID
 				reply.TaskType = task.TaskType
 				reply.FileName = task.FileName
 				reply.NReduce = task.NReduce
 				reply.ReduceID = task.ReduceTaskIndex
+				c.mapTasks[i].TaskStatus = Running
+				c.mapTasks[i].StartTime = time.Now()
 				return nil
 			}
 		}
+		reply.TaskType = WaitingTask
+		return nil
 	}
 
-	// 到这里说明map任务已经分配完成，判断reduce任务是否都完成
+	// 到这里说明map任务已经完成，判断reduce任务是否都完成
 	if !c.isReduceFinished {
 		for i, task := range c.reduceTasks {
 			// 如果存在reduce waiting任务，则将其改为running，并返回给worker执行
 			if c.reduceTasks[i].TaskStatus == Waiting {
-				c.reduceTasks[i].TaskStatus = Running
-				c.reduceTasks[i].StartTime = time.Now()
 				reply.TaskID = task.TaskID
 				reply.TaskType = task.TaskType
 				reply.AllMapNum = len(c.mapTasks)
 				reply.ReduceID = task.ReduceTaskIndex
+				c.reduceTasks[i].TaskStatus = Running
+				c.reduceTasks[i].StartTime = time.Now()
 				return nil
 			}
 		}
-	}else{
-		reply.TaskType = Finished
-		return nil
+
 	}
 
-	// ExitTask
 	reply.TaskType = WaitingTask
 	return nil
 }
@@ -97,30 +97,37 @@ func (c *Coordinator) checkTimeoutTask() {
 	timeout := 10 * time.Second
 
 	// 如果 map 任务已经完成，则返回
-	if c.isMapFinished {
-		return
-	}
-	for i := 0; i < len(c.mapTasks); i++ {
-		task := c.mapTasks[i]
-		// 判断正在执行的任务是否存在超时的
-		if task.TaskStatus == Running && time.Since(task.StartTime) > timeout {
-			// 如果存在，将状态改为 waiting，等待其他 worker 来执行
-			task.TaskStatus = Waiting
-			// 这里不需要修改任务的time，后面检测到waiting时，会重新标记时间
-			// return 不 return，继续判断下一个任务，否则每次只标记到了一个任务就返回了
+	// if c.isMapFinished {
+	// 	return
+	// }
+	// 这里不可以直接return，会导致下面的reduce任务无法判断
+
+	now := time.Now()
+
+	if !c.isMapFinished {
+		for i := 0; i < len(c.mapTasks); i++ {
+			task := c.mapTasks[i]
+			// 判断正在执行的任务是否存在超时的
+			if task.TaskStatus == Running && now.Sub(task.StartTime) > timeout {
+				// 如果存在，将状态改为 waiting，等待其他 worker 来执行
+				c.mapTasks[i].TaskStatus = Waiting
+				// 这里不需要修改任务的time，后面检测到waiting时，会重新标记时间
+				// return 不 return，继续判断下一个任务，否则每次只标记到了一个任务就返回了
+			}
 		}
 	}
 
 	// 如果 reduce 任务已经完成，则返回
+	// 这里可以直接return，代表全部任务执行完毕
 	if c.isReduceFinished {
 		return
 	}
 	for i := 0; i < len(c.reduceTasks); i++ {
 		task := c.reduceTasks[i]
 		// 存在超时任务
-		if task.TaskStatus == Running && time.Since(task.StartTime) > timeout {
+		if task.TaskStatus == Running && now.Sub(task.StartTime) > timeout {
 			// 将状态改为 waiting，等待其他 worker 来执行
-			task.TaskStatus = Waiting
+			c.reduceTasks[i].TaskStatus = Waiting
 			// 这里不需要修改任务的time，后面检测到waiting时，会重新标记时间
 			// return
 		}
@@ -139,10 +146,10 @@ func (c *Coordinator) CompleteTask(args *CompleteTaskReq, reply *CompleteTaskRep
 		// 判断所有map任务是否完成
 
 		allmapfinished := true
-		for _, task := range c.mapTasks {
+		for i, task := range c.mapTasks {
 			if args.TaskID == task.TaskID {
-				task.TaskStatus = Finished
-			}else if task.TaskStatus != Finished {
+				c.mapTasks[i].TaskStatus = Finished
+			} else if task.TaskStatus != Finished {
 				allmapfinished = false
 			}
 		}
@@ -156,10 +163,10 @@ func (c *Coordinator) CompleteTask(args *CompleteTaskReq, reply *CompleteTaskRep
 		}
 
 		allreducefinished := true
-		for _, task := range c.reduceTasks {
+		for i, task := range c.reduceTasks {
 			if args.TaskID == task.TaskID {
-				task.TaskStatus = Finished
-			}else if task.TaskStatus != Finished {
+				c.reduceTasks[i].TaskStatus = Finished
+			} else if task.TaskStatus != Finished {
 				allreducefinished = false
 			}
 		}
@@ -221,7 +228,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// map任务初始化
 	for i, file := range files {
 		c.mapTasks[i] = Task{
-			TaskID:       c.nextTaskId,
+			TaskID:       i,
 			TaskType:     MapTask,
 			TaskStatus:   Waiting,
 			NReduce:      nReduce,
@@ -235,7 +242,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// reduce任务初始化
 	for i := 0; i < nReduce; i++ {
 		c.reduceTasks[i] = Task{
-			TaskID:          c.nextTaskId,
+			TaskID:          i,
 			TaskType:        ReduceTask,
 			TaskStatus:      Waiting,
 			ReduceTaskIndex: i,
